@@ -30,6 +30,36 @@ function is_admin(): bool
     return (current_user()['role'] ?? '') === 'admin';
 }
 
+function is_customer(): bool
+{
+    return (current_user()['role'] ?? '') === 'pelanggan';
+}
+
+function is_staff(): bool
+{
+    return in_array(current_user()['role'] ?? '', ['admin', 'kasir'], true);
+}
+
+function require_staff(): void
+{
+    require_login();
+    if (!is_staff()) {
+        http_response_code(403);
+        include __DIR__ . '/403.php';
+        exit;
+    }
+}
+
+function current_customer_id(): ?int
+{
+    $user = current_user();
+    if (!$user || !is_customer()) return null;
+    $stmt = db()->prepare('SELECT id_pelanggan FROM pelanggan WHERE user_id = ? LIMIT 1');
+    $stmt->execute([(int) $user['id']]);
+    $id = $stmt->fetchColumn();
+    return $id === false ? null : (int) $id;
+}
+
 function require_login(): void
 {
     if (!current_user()) {

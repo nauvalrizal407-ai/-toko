@@ -38,8 +38,23 @@ Sesuaikan `DB_USER` dan `DB_PASS` jika MySQL Anda memakai password.
 |---|---|---|
 | Admin | `admin` | `admin123` |
 | Kasir | `kasir` | `kasir123` |
+| Kasir 1 | `kasir1` | `kasir123` |
+| Kasir 2 | `kasir2` | `kasir123` |
+| Kasir 3 | `kasir3` | `kasir123` |
 
 Segera ganti password default pada database untuk penggunaan nyata.
+
+## Payment gateway Duitku
+
+Checkout pelanggan menyediakan pembayaran melalui Duitku. Selain `API_KEY`, `MERHANT` (atau `MERCHANT`), dan `MODE`, atur URL publik callback agar Duitku dapat mengirim notifikasi pembayaran:
+
+```env
+DUITKU_PAYMENT_METHOD=VC
+DUITKU_CALLBACK_URL=https://domain-anda/toko-ku/duitku-callback.php
+DUITKU_RETURN_URL=https://domain-anda/toko-ku/duitku-return.php
+```
+
+`DUITKU_CALLBACK_URL` wajib dapat diakses dari internet. Status transaksi hanya diubah setelah signature callback dan nominal transaksi tervalidasi.
 
 ## Fitur utama
 
@@ -50,11 +65,13 @@ Segera ganti password default pada database untuk penggunaan nyata.
 - Pencarian dan filter barang di halaman kasir.
 - Keranjang belanja melalui ikon di pojok kanan atas.
 - Perubahan jumlah barang, pengosongan keranjang, dan pembayaran dari keranjang.
-- Stok otomatis berkurang setelah transaksi berhasil dibayar.
+- Pembayaran tunai dan QRIS menggunakan gambar QR statis milik toko.
+- Transaksi QRIS menunggu konfirmasi kasir setelah pembayaran diverifikasi; stok dikembalikan jika transaksi dibatalkan.
+- Stok tunai berkurang setelah pembayaran; stok QRIS ditahan selama menunggu konfirmasi dan dikembalikan jika dibatalkan.
 - Format harga mendukung `3.000`, `4.000,00`, dan `1.250.000`.
 - Riwayat transaksi dan detail pembayaran.
 - Nota thermal lebar 58 mm dengan tinggi mengikuti isi transaksi.
-- Laporan penjualan berdasarkan rentang tanggal.
+- Laporan transaksi per akun kasir atau semua kasir, dapat dicetak.
 - Log aktivitas kasir.
 - Logout dan proteksi role di sisi server.
 
@@ -66,11 +83,13 @@ Segera ganti password default pada database untuk penggunaan nyata.
 - Menambah atau mengubah barang.
 - Tidak dapat menghapus barang.
 - Tidak dapat menghapus transaksi.
+- Hanya dapat melihat riwayat, detail, nota, dan transaksi QRIS miliknya sendiri.
 - Tidak dapat membuka laporan dan log aktivitas admin.
 
 ### Admin
 
 - Memiliki akses ke seluruh fitur aplikasi.
+- Dapat melihat riwayat transaksi dari semua kasir.
 - Dapat menghapus barang yang belum pernah digunakan dalam transaksi.
 - Barang yang sudah masuk transaksi akan dinonaktifkan, bukan dihapus permanen, agar nota lama tetap aman.
 - Transaksi berstatus `paid` tidak dapat dihapus, termasuk oleh admin.
@@ -88,16 +107,36 @@ Segera ganti password default pada database untuk penggunaan nyata.
 
 Nota mencetak semua barang, jumlah, harga, subtotal, diskon, total, tunai, dan kembalian.
 
+## Pembayaran QRIS
+
+1. Tambahkan barang ke keranjang, buka ikon keranjang, lalu klik **Bayar dengan QRIS**.
+2. Pelanggan memindai QR dan memasukkan nominal yang ditampilkan. Nominal tidak terisi otomatis.
+3. Kasir memeriksa pembayaran pada aplikasi/riwayat merchant, lalu klik **Konfirmasi pembayaran masuk**. Jangan konfirmasi hanya berdasarkan bukti layar pelanggan.
+4. Jika transaksi dibatalkan, stok yang ditahan akan dikembalikan. Transaksi yang belum selesai bisa dilanjutkan dari detail transaksi.
+
+Gunakan QR merchant yang berlaku tetap. Jika foto yang dikirim berasal dari permintaan pembayaran sekali pakai atau sudah kedaluwarsa, ganti `assets/images/qris.png` dengan gambar QR merchant yang valid.
+
+Untuk instalasi lama, tambahkan kolom metode pembayaran melalui phpMyAdmin atau MySQL:
+
+```sql
+ALTER TABLE app_transaksi
+ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) NOT NULL DEFAULT 'cash' AFTER bayar;
+```
+
+Database baru mendapatkan kolom tersebut saat menjalankan `database.sql`.
+
 ## Struktur penting
 
 ```text
 config/             Konfigurasi aplikasi dan koneksi database
-includes/           Auth, header, footer, dan helper
+includes/           Auth, header, footer, dan helper transaksi
 assets/style.css    Style utama
 assets/theme.css    Tema visual modern
 assets/uploads/     Penyimpanan foto barang
+assets/images/qris.png  QRIS statis toko
 barang.php          Manajemen barang
-kasir.php           Transaksi dan pembayaran
+kasir.php           Transaksi, scan barcode, dan pembayaran
+qris.php            Pembayaran QRIS dan konfirmasi kasir
 transaksi.php       Riwayat transaksi
 nota.php            Format cetak nota
 laporan.php         Laporan penjualan

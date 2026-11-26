@@ -1,6 +1,6 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
-require_login();
+require_staff();
 $pdo = db();
 $pageTitle = 'Data Barang';
 $activePage = 'barang';
@@ -51,6 +51,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'save') {
             $id = (int) ($_POST['id'] ?? 0);
             $kode = trim($_POST['kode_barang'] ?? '');
+            if ($kode === '') {
+                $kode = 'BRG-' . date('ymdHis') . '-' . random_int(100000, 999999);
+            }
             $nama = trim($_POST['nama_barang'] ?? '');
             $kategori = trim($_POST['kategori'] ?? '');
             $harga = parse_price($_POST['harga'] ?? '');
@@ -58,6 +61,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $satuan = trim($_POST['satuan'] ?? 'pcs') ?: 'pcs';
             if ($kode === '' || $nama === '' || $harga < 0 || $stok < 0) {
                 throw new RuntimeException('Lengkapi data barang dengan benar.');
+            }
+
+            if ($id) {
+                $stmt = $pdo->prepare("SELECT COUNT(*) FROM app_detail_transaksi d JOIN app_transaksi t ON t.id=d.transaksi_id WHERE d.barang_id=? AND t.payment_method='qris' AND t.status='unpaid'");
+                $stmt->execute([$id]);
+                if ((int) $stmt->fetchColumn() > 0) {
+                    $stmt = $pdo->prepare('SELECT stok FROM barang WHERE id=?');
+                    $stmt->execute([$id]);
+                    if ((int) $stmt->fetchColumn() !== $stok) {
+                        throw new RuntimeException('Stok tidak dapat diubah selama pembayaran QRIS barang ini masih menunggu konfirmasi.');
+                    }
+                }
             }
 
             $photo = '';
@@ -97,6 +112,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Kasir tidak memiliki akses menghapus barang.');
             }
             $id = (int) $_POST['id'];
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM app_detail_transaksi d JOIN app_transaksi t ON t.id=d.transaksi_id WHERE d.barang_id=? AND t.payment_method='qris' AND t.status='unpaid'");
+            $stmt->execute([$id]);
+            if ((int) $stmt->fetchColumn() > 0) {
+                throw new RuntimeException('Barang sedang ditahan pada transaksi QRIS. Batalkan transaksi QRIS terlebih dahulu.');
+            }
             $stmt = $pdo->prepare('SELECT foto FROM barang WHERE id = ?');
             $stmt->execute([$id]);
             $photo = $stmt->fetchColumn();
@@ -143,7 +163,7 @@ include __DIR__ . '/includes/header.php';
         <form method="post" enctype="multipart/form-data">
             <input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="<?= e($edit['id'] ?? 0) ?>">
             <div class="form-grid">
-                <div><label>Kode barang</label><input class="input" name="kode_barang" required value="<?= e($edit['kode_barang'] ?? '') ?>"></div>
+                <div><label>Kode barang / barcode</label><div class="barcode-field"><input id="kode-barang" class="input" name="kode_barang" required value="<?= e($edit['kode_barang'] ?? '') ?>"><button id="generate-barcode" class="btn btn-light" type="button">Generate</button></div></div>
                 <div><label>Nama barang</label><input class="input" name="nama_barang" required value="<?= e($edit['nama_barang'] ?? '') ?>"></div>
                 <div><label>Kategori</label><select class="select" name="kategori" required><?php $currentCategory = trim($edit['kategori'] ?? ''); if ($currentCategory !== '' && !in_array($currentCategory, $categoryOptions, true)): ?><option value="<?= e($currentCategory) ?>" selected><?= e($currentCategory) ?> (kategori lama)</option><?php endif; ?><option value="">Pilih kategori</option><?php foreach ($categoryOptions as $category): ?><option value="<?= e($category) ?>" <?= $currentCategory === $category ? 'selected' : '' ?>><?= e($category) ?></option><?php endforeach; ?></select></div>
                 <div><label>Satuan</label><input class="input" name="satuan" value="<?= e($edit['satuan'] ?? 'pcs') ?>"></div>
@@ -158,7 +178,7 @@ include __DIR__ . '/includes/header.php';
         <div class="section-head"><h2>Daftar barang <span class="muted small">(<?= count($items) ?>)</span></h2></div>
         <form class="search-row" method="get"><input class="input" name="q" placeholder="Cari kode, nama, kategori..." value="<?= e($q) ?>"><button class="btn btn-light" type="submit">Cari</button></form>
         <div class="table-wrap"><table class="table"><thead><tr><th>Barang</th><th>Harga</th><th>Stok</th><th></th></tr></thead><tbody>
-        <?php foreach ($items as $item): ?><tr><td><div class="item-with-photo"><?php if (!empty($item['foto'])): ?><img class="product-thumb" src="<?= e(url('assets/uploads/barang/' . $item['foto'])) ?>" alt="<?= e($item['nama_barang']) ?>"><?php else: ?><span class="product-thumb placeholder">▤</span><?php endif; ?><div><strong><?= e($item['nama_barang']) ?></strong><div class="muted small"><?= e($item['kode_barang']) ?> · <?= e($item['kategori'] ?: 'Tanpa kategori') ?></div></div></div></td><td class="amount"><?= money($item['harga']) ?></td><td><span class="badge <?= $item['stok'] <= 5 ? 'unpaid' : 'paid' ?>"><?= e($item['stok']) ?> <?= e($item['satuan']) ?></span></td><td><div class="actions"><a class="btn btn-light btn-sm" href="<?= e(url('barang.php?edit=' . $item['id'])) ?>">Ubah</a><?php if (is_admin()): ?><form method="post" onsubmit="return confirm('Hapus barang ini?')"><input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= e($item['id']) ?>"><button class="btn btn-danger btn-sm">Hapus</button></form><?php endif; ?></div></td></tr><?php endforeach; ?>
+        <?php foreach ($items as $item): ?><tr><td><div class="item-with-photo"><?php if (!empty($item['foto'])): ?><img class="product-thumb" src="<?= e(url('assets/uploads/barang/' . $item['foto'])) ?>" alt="<?= e($item['nama_barang']) ?>"><?php else: ?><span class="product-thumb placeholder">▤</span><?php endif; ?><div><strong><?= e($item['nama_barang']) ?></strong><div class="muted small"><?= e($item['kategori'] ?: 'Tanpa kategori') ?></div><svg class="barcode-label" jsbarcode-value="<?= e($item['kode_barang']) ?>"></svg></div></div></td><td class="amount"><?= money($item['harga']) ?></td><td><span class="badge <?= $item['stok'] <= 5 ? 'unpaid' : 'paid' ?>"><?= e($item['stok']) ?> <?= e($item['satuan']) ?></span></td><td><div class="actions"><a class="btn btn-light btn-sm" href="<?= e(url('barang.php?edit=' . $item['id'])) ?>">Ubah</a><?php if (is_admin()): ?><form method="post" onsubmit="return confirm('Hapus barang ini?')"><input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= e($item['id']) ?>"><button class="btn btn-danger btn-sm">Hapus</button></form><?php endif; ?></div></td></tr><?php endforeach; ?>
         <?php if (!$items): ?><tr><td colspan="4" class="empty">Barang belum tersedia.</td></tr><?php endif; ?></tbody></table></div>
     </section>
 </div>

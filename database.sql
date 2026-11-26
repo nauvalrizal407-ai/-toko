@@ -6,20 +6,26 @@ USE `toko`;
 -- Tabel pelanggan lama pada database Anda memakai id_pelanggan/nama_pelanggan/no_hp.
 CREATE TABLE IF NOT EXISTS pelanggan (
   id_pelanggan INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT UNSIGNED NULL,
   nama_pelanggan VARCHAR(100) NOT NULL,
   alamat VARCHAR(150) NULL,
   no_hp VARCHAR(15) NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE pelanggan ADD COLUMN IF NOT EXISTS user_id INT UNSIGNED NULL AFTER id_pelanggan;
+ALTER TABLE pelanggan ADD UNIQUE INDEX IF NOT EXISTS uq_pelanggan_user_id (user_id);
 
 CREATE TABLE IF NOT EXISTS app_users (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   nama VARCHAR(100) NOT NULL,
   username VARCHAR(50) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
-  role ENUM('admin','kasir') NOT NULL DEFAULT 'kasir',
+  role ENUM('admin','kasir','pelanggan') NOT NULL DEFAULT 'kasir',
   aktif TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE app_users MODIFY COLUMN role ENUM('admin','kasir','pelanggan') NOT NULL DEFAULT 'kasir';
 
 CREATE TABLE IF NOT EXISTS barang (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -45,6 +51,7 @@ CREATE TABLE IF NOT EXISTS app_transaksi (
   diskon DECIMAL(14,2) NOT NULL DEFAULT 0,
   total DECIMAL(14,2) NOT NULL DEFAULT 0,
   bayar DECIMAL(14,2) NOT NULL DEFAULT 0,
+  payment_method VARCHAR(20) NOT NULL DEFAULT 'cash',
   kembalian DECIMAL(14,2) NOT NULL DEFAULT 0,
   status ENUM('unpaid','paid','cancelled') NOT NULL DEFAULT 'unpaid',
   paid_at DATETIME NULL,
@@ -53,6 +60,10 @@ CREATE TABLE IF NOT EXISTS app_transaksi (
   CONSTRAINT fk_app_trx_user FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE RESTRICT,
   INDEX idx_app_trx_tanggal (created_at), INDEX idx_app_trx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE app_transaksi ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) NOT NULL DEFAULT 'cash' AFTER bayar;
+ALTER TABLE app_transaksi ADD COLUMN IF NOT EXISTS gateway_reference VARCHAR(100) NULL AFTER payment_method;
+ALTER TABLE app_transaksi ADD COLUMN IF NOT EXISTS gateway_payment_url VARCHAR(500) NULL AFTER gateway_reference;
 
 CREATE TABLE IF NOT EXISTS app_detail_transaksi (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -106,7 +117,10 @@ CREATE TABLE IF NOT EXISTS app_laporan_transaksi (
 
 INSERT INTO app_users (nama, username, password_hash, role) VALUES
 ('Administrator', 'admin', '$2y$10$CAr8vV7/oPNaGE/.qGyArO.0e4dJ2SVXsk.BvqztAMr3ljbiEucci', 'admin'),
-('Kasir Utama', 'kasir', '$2y$10$ruahDyS7X2X89wtgwXHyru9FNiMh8YChiv4zXifjpgMh6.XdYMtLi', 'kasir')
+('Kasir Utama', 'kasir', '$2y$10$ruahDyS7X2X89wtgwXHyru9FNiMh8YChiv4zXifjpgMh6.XdYMtLi', 'kasir'),
+('Kasir 1', 'kasir1', '$2y$10$ruahDyS7X2X89wtgwXHyru9FNiMh8YChiv4zXifjpgMh6.XdYMtLi', 'kasir'),
+('Kasir 2', 'kasir2', '$2y$10$ruahDyS7X2X89wtgwXHyru9FNiMh6.XdYMtLi', 'kasir'),
+('Kasir 3', 'kasir3', '$2y$10$ruahDyS7X2X89wtgwXHyru9FNiMh6.XdYMtLi', 'kasir')
 ON DUPLICATE KEY UPDATE nama=VALUES(nama), password_hash=VALUES(password_hash), role=VALUES(role), aktif=1;
 
 INSERT INTO pelanggan (nama_pelanggan, alamat, no_hp)

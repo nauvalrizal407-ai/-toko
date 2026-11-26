@@ -1,8 +1,9 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/transactions.php';
 require_login();
 $pdo = db();
-$pageTitle = 'Kasir';
+$pageTitle = is_customer() ? 'Belanja Produk' : 'Kasir';
 $activePage = 'kasir';
 $error = '';
 if (!isset($_SESSION['cart'])) $_SESSION['cart'] = [];
@@ -18,6 +19,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $current = $_SESSION['cart'][$id]['qty'] ?? 0;
             if ($current + 1 > (int) $item['stok']) throw new RuntimeException('Stok barang tidak mencukupi.');
             $_SESSION['cart'][$id] = ['id'=>$item['id'], 'kode'=>$item['kode_barang'], 'nama'=>$item['nama_barang'], 'harga'=>$item['harga'], 'qty'=>$current+1];
+        } elseif ($action === 'scan') {
+            $barcode = trim((string) ($_POST['barcode'] ?? ''));
+            if ($barcode === '') throw new RuntimeException('Kode barcode belum dimasukkan.');
+            $stmt = $pdo->prepare('SELECT * FROM barang WHERE kode_barang = ? AND aktif = 1');
+            $stmt->execute([$barcode]);
+            $item = $stmt->fetch();
+            if (!$item) throw new RuntimeException('Barcode "' . $barcode . '" tidak ditemukan.');
+            if ((int) $item['stok'] <= 0) throw new RuntimeException('Stok barang "' . $item['nama_barang'] . '" sudah habis.');
+            $id = (int) $item['id'];
+            $current = $_SESSION['cart'][$id]['qty'] ?? 0;
+            if ($current + 1 > (int) $item['stok']) throw new RuntimeException('Stok barang tidak mencukupi.');
+            $_SESSION['cart'][$id] = ['id'=>$id, 'kode'=>$item['kode_barang'], 'nama'=>$item['nama_barang'], 'harga'=>$item['harga'], 'qty'=>$current + 1];
+            flash('success', $item['nama_barang'] . ' ditambahkan ke keranjang.');
+            header('Location: ' . url('kasir.php'));
+            exit;
         } elseif ($action === 'update') {
             foreach (($_POST['qty'] ?? []) as $id => $qty) {
                 $id = (int) $id; $qty = (int) $qty;
@@ -29,37 +45,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['cart'] = [];
         } elseif ($action === 'checkout') {
             if (!$_SESSION['cart']) throw new RuntimeException('Keranjang masih kosong.');
-            $customerId = (int) ($_POST['pelanggan_id'] ?? 0) ?: null; $paid = (float) ($_POST['bayar'] ?? 0); $total = 0;
-            foreach ($_SESSION['cart'] as $row) $total += $row['harga'] * $row['qty'];
-            if ($paid < $total) throw new RuntimeException('Nominal pembayaran kurang dari total transaksi.');
-            $pdo->beginTransaction(); $number = 'TRX-' . date('ymdHis') . '-' . random_int(10, 99);
-            $stmt = $pdo->prepare("INSERT INTO app_transaksi (nomor_transaksi,pelanggan_id,user_id,subtotal,diskon,total,bayar,kembalian,status,paid_at) VALUES (?,?,?,?,?,?,?,?, 'paid', NOW())");
-            $stmt->execute([$number, $customerId, current_user()['id'], $total, 0, $total, $paid, $paid - $total]); $transactionId = (int) $pdo->lastInsertId();
-            foreach ($_SESSION['cart'] as $row) {
-                $stmt = $pdo->prepare('INSERT INTO app_detail_transaksi (transaksi_id,barang_id,nama_barang,harga,qty,subtotal) VALUES (?,?,?,?,?,?)'); $stmt->execute([$transactionId, $row['id'], $row['nama'], $row['harga'], $row['qty'], $row['harga'] * $row['qty']]);
-                $stmt = $pdo->prepare('UPDATE barang SET stok=stok-? WHERE id=? AND aktif=1 AND stok>=?'); $stmt->execute([$row['qty'], $row['id'], $row['qty']]);
-                if ($stmt->rowCount() !== 1) throw new RuntimeException('Stok berubah. Silakan ulangi transaksi.');
+            $customerId = is_customer()
+                ? current_customer_id()
+                : ((int) ($_POST['pelanggan_id'] ?? 0) ?: null);
+            if (is_customer() && !$customerId) {
+                throw new RuntimeException('Profil pelanggan belum tersedia. Hubungi admin toko.');
             }
-            $stmt = $pdo->prepare('INSERT INTO app_laporan_transaksi (transaksi_id,tanggal,total,status) VALUES (?,CURDATE(),?,?)'); $stmt->execute([$transactionId, $total, 'paid']);
-            if ($customerId) {
-                $stmt = $pdo->prepare('INSERT INTO app_log_pelanggan (pelanggan_id,transaksi_id,aksi) VALUES (?,?,?)'); $stmt->execute([$customerId, $transactionId, 'Pembelian']);
-                $stmt = $pdo->prepare('INSERT INTO app_total_pelanggan (pelanggan_id,total_transaksi,total_belanja) VALUES (?,?,?) ON DUPLICATE KEY UPDATE total_transaksi=total_transaksi+1,total_belanja=total_belanja+VALUES(total_belanja)'); $stmt->execute([$customerId, 1, $total]);
+            $paymentMethod = (string) ($_POST['payment_method'] ?? 'cash');
+            if (!in_array($paymentMethod, ['cash', 'qris', 'duitku'], true)) {
+                throw new RuntimeException('Metode pembayaran tidak valid.');
             }
-            $pdo->commit(); log_activity('transaksi', 'Menyelesaikan transaksi ' . $number); $_SESSION['cart'] = [];
-            flash('success', 'Transaksi ' . $number . ' berhasil dibayar. Kembalian: ' . money($paid - $total)); header('Location: ' . url('transaksi.php?view=' . $transactionId)); exit;
+            if ($paymentMethod === 'duitku') {
+                $duitkuMethod = strtoupper(trim((string) ($_POST['duitku_method'] ?? env_value('DUITKU_PAYMENT_METHOD', 'VC'))));
+                if (!preg_match('/^[A-Z0-9]{2,10}$/', $duitkuMethod)) throw new RuntimeException('Metode pembayaran Duitku tidak valid.');
+                $transaction = create_duitku_transaction($pdo, $_SESSION['cart'], $customerId, $duitkuMethod);
+                $_SESSION['cart'] = [];
+                header('Location: ' . $transaction['payment_url']);
+                exit;
+            }
+            if ($paymentMethod === 'qris') {
+                $transaction = create_qris_transaction($pdo, $_SESSION['cart'], $customerId);
+                $_SESSION['cart'] = [];
+                header('Location: ' . url('qris.php?view=' . $transaction['id']));
+                exit;
+            }
+            $paid = (float) ($_POST['bayar'] ?? 0);
+            $transaction = finalize_cart_payment($pdo, $_SESSION['cart'], $customerId, $paid, $paymentMethod);
+            $_SESSION['cart'] = [];
+            flash('success', 'Transaksi ' . $transaction['number'] . ' berhasil dibayar. Kembalian: ' . money($transaction['change']));
+            header('Location: ' . url(is_customer() ? 'kasir.php' : 'transaksi.php?view=' . $transaction['id']));
+            exit;
         }
-    } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); $error = $e->getMessage(); }
+    } catch (Throwable $e) { $error = $e->getMessage(); }
 }
 
 $products = $pdo->query('SELECT * FROM barang WHERE aktif = 1 AND stok > 0 ORDER BY nama_barang')->fetchAll();
+$duitkuMethods = [];
+if (is_customer() && duitku_configured() && $_SESSION['cart']) {
+    $cartAmount = 0;
+    foreach ($_SESSION['cart'] as $cartRow) $cartAmount += (int) round((float) $cartRow['harga']) * (int) $cartRow['qty'];
+    $cache = $_SESSION['_duitku_methods'] ?? null;
+    if (!$cache || empty($cache['methods']) || (int) ($cache['expires'] ?? 0) < time() || (int) ($cache['amount'] ?? 0) !== $cartAmount) {
+        try {
+            $cache = ['expires' => time() + 300, 'amount' => $cartAmount, 'methods' => duitku_payment_methods($cartAmount)];
+            $_SESSION['_duitku_methods'] = $cache;
+        } catch (Throwable $e) {
+            $cache = ['expires' => time() + 60, 'amount' => $cartAmount, 'methods' => []];
+            $_SESSION['_duitku_methods'] = $cache;
+        }
+    }
+    $duitkuMethods = $cache['methods'] ?? [];
+}
 $categoryOptions = ['' => 'Semua', 'Sepatu' => 'Sepatu', 'Jaket' => 'Jaket', 'Perlengkapan' => 'Perlengkapan'];
 $selectedCategory = trim($_GET['kategori'] ?? '');
 if (!array_key_exists($selectedCategory, $categoryOptions)) $selectedCategory = '';
 include __DIR__ . '/includes/header.php';
 ?>
 <section class="card">
-    <div class="section-head"><div><h2>Pilih barang</h2></div></div>
+    <div class="section-head"><div><h2><?= is_customer() ? 'Pilih produk untuk dibeli' : 'Pilih atau scan barang' ?></h2><p class="muted small"><?= is_customer() ? 'Tambahkan produk ke keranjang, lalu lanjutkan pembayaran.' : 'Gunakan pencarian atau scanner untuk mempercepat transaksi.' ?></p></div></div>
     <?php if ($error): ?><div class="alert error"><?= e($error) ?></div><?php endif; ?>
+    <?php if (!is_customer()): ?><form class="barcode-scan-row" method="post" autocomplete="off">
+        <input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>">
+        <input type="hidden" name="action" value="scan">
+        <label for="barcode-input">Scan barcode</label>
+        <div class="barcode-scan-controls">
+            <input id="barcode-input" class="input" name="barcode" placeholder="Arahkan scanner ke sini, lalu scan..." autofocus>
+            <button class="btn btn-primary" type="submit">Tambah</button>
+        </div>
+        <small class="muted">Scanner barcode akan menambahkan barang secara otomatis setelah kode dibaca.</small>
+    </form><?php endif; ?>
     <form class="search-row" method="get"><input class="input" name="q" placeholder="Cari nama barang..." value="<?= e($_GET['q'] ?? '') ?>"><button class="btn btn-light">Cari</button></form>
     <div class="category-tabs"><?php foreach ($categoryOptions as $categoryValue => $categoryLabel): ?><a class="category-tab <?= $selectedCategory === $categoryValue ? 'active' : '' ?>" href="<?= e(url('kasir.php' . ($categoryValue !== '' ? '?kategori=' . rawurlencode($categoryValue) : ''))) ?>"><?= e($categoryLabel) ?></a><?php endforeach; ?></div>
     <div class="product-grid">
